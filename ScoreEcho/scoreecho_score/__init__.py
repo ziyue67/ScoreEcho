@@ -152,44 +152,54 @@ def _extract_role_from_command(command_str: str) -> str:
     return parts[0] if parts else ""
 
 
+async def _fetch_image_bytes(client: httpx.AsyncClient, source: str) -> bytes:
+    """读取图片源，支持 http(s) 链接、data:image、base64:// 和纯 base64"""
+    if source.startswith(("http://", "https://")):
+        resp = await client.get(source)
+        resp.raise_for_status()
+        return resp.content
+
+    if source.startswith("data:image/"):
+        source = source.split(",", 1)[-1]
+    elif source.startswith("base64://"):
+        source = source.removeprefix("base64://")
+
+    try:
+        return base64.b64decode(source.strip(), validate=True)
+    except Exception as e:
+        raise ValueError(f"无法识别图片来源: {source[:50]!r}") from e
+
+
 async def _encode_images(upload_images):
     images_b64 = []
-    for image_url in upload_images:
-        if image_url.startswith("data:"):
-            _, _, b64_data = image_url.partition(",")
-            image_bytes = base64.b64decode(b64_data)
-        elif image_url.startswith("base64://"):
-            image_bytes = base64.b64decode(image_url[len("base64://"):])
-        else:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                try:
-                    resp = await client.get(image_url)
-                except httpx.InvalidURL:
-                    logger.warning(f"[鸣潮评分] 图片URL无效(过长)，跳过: {image_url[:80]}...")
-                    continue
-                resp.raise_for_status()
-                image_bytes = resp.content
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for image_source in upload_images:
+            try:
+                image_bytes = await _fetch_image_bytes(client, image_source)
+            except httpx.InvalidURL:
+                logger.warning(f"[鸣潮评分] 图片URL无效(过长)，跳过: {image_source[:80]}...")
+                continue
 
-        max_size_bytes = 2 * 1024 * 1024
+            max_size_bytes = 2 * 1024 * 1024
 
-        with Image.open(BytesIO(image_bytes)) as img:
-            if img.mode not in ("RGB",):
-                img = img.convert("RGB")
+            with Image.open(BytesIO(image_bytes)) as img:
+                if img.mode not in ("RGB",):
+                    img = img.convert("RGB")
 
-            output_buffer = BytesIO()
-            quality = 100
+                output_buffer = BytesIO()
+                quality = 100
 
-            while quality > 10:
-                output_buffer.seek(0)
-                output_buffer.truncate()
-                img.save(output_buffer, format="WEBP", quality=quality)
-                if output_buffer.tell() < max_size_bytes:
-                    break
-                quality -= 5
+                while quality > 10:
+                    output_buffer.seek(0)
+                    output_buffer.truncate()
+                    img.save(output_buffer, format="WEBP", quality=quality)
+                    if output_buffer.tell() < max_size_bytes:
+                        break
+                    quality -= 5
 
-            compressed_image_bytes = output_buffer.getvalue()
+                compressed_image_bytes = output_buffer.getvalue()
 
-        images_b64.append(base64.b64encode(compressed_image_bytes).decode("utf-8"))
+            images_b64.append(base64.b64encode(compressed_image_bytes).decode("utf-8"))
     return images_b64
 
 
@@ -400,8 +410,8 @@ async def score_phantom_rank(bot: Bot, ev: Event):
 @sv_phantom_score.on_command(("评分", "評分", "查分", "pf"), block=True)
 @sv_phantom_score.on_regex(
     (
-        rf"({PATTERN})\s*(?:[cC](?:[oO][sS][tT])?\s*([134])|([134])\s*[cC](?:[oO][sS][tT])?)\s*({PATTERN})?$",
-        rf"({PATTERN})(?:评分|評分|查分)$",
+        rf"^({PATTERN})\s*(?:[cC](?:[oO][sS][tT])?\s*([134])|([134])\s*[cC](?:[oO][sS][tT])?)\s*({PATTERN})?$",
+        rf"^({PATTERN})(?:评分|評分|查分)$",
     ),
     block=True,
 )
